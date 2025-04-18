@@ -1,0 +1,77 @@
+name: "SSH Docker Deploy"
+description: "Logs into a host over SSH, updates a docker-compose service tag, pulls & restarts containers, and prunes."
+branding:
+  icon: "package"
+  color: "green"
+
+inputs:
+  host:
+    description: "SSH host (IP or domain)"
+    required: true
+  username:
+    description: "User to SSH as"
+    required: true
+  ssh_key:
+    description: "Private key to use for SSH"
+    required: true
+  registry:
+    description: "Docker registry (e.g. xyz.aliyuncs.com or AWS ECR URL)"
+    required: true
+  repository:
+    description: "Image repository name (e.g. my-org/my-app)"
+    required: true
+  image_tag:
+    description: "New image tag to deploy"
+    required: true
+  aliyun_username:
+    description: "Aliyun registry username (if using aliyuncs)"
+    required: false
+    default: ""
+  aliyun_password:
+    description: "Aliyun registry password"
+    required: false
+    default: ""
+  working_directory:
+    description: "Path on host to your docker-compose directory"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Deploy via SSH
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.ssh_key }}
+        script: |
+          # Log into registry
+          if [[ "${{ inputs.registry }}" == *.aliyuncs.com* ]]; then
+            sudo docker login ${{ inputs.registry }} \
+              -u ${{ inputs.aliyun_username }} \
+              --password ${{ inputs.aliyun_password }}
+          else
+            sudo aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+              sudo docker login --username AWS --password-stdin ${{ inputs.registry }}
+          fi
+
+          cd ${{ inputs.working_directory }}
+
+          # Update docker-compose.yml with new tag
+          if [[ "${{ inputs.image_tag }}" != "latest" ]]; then
+            sed -i "s|${{ inputs.repository }}:[0-9]*\.[0-9]*\.[0-9]*|${{ inputs.repository }}:${{ inputs.image_tag }}|g" docker-compose.yml
+          fi
+
+          # Pull & restart
+          sudo docker compose pull
+          sudo docker compose up -d
+
+          # Prune old images
+          if [[ "${{ inputs.image_tag }}" != "latest" ]]; then
+            sudo docker images --format "{{'{{'}}.Repository}}:{{'{{'}}.Tag}}" \
+            | grep "${{ inputs.repository }}" \
+            | grep -v -E "(:${{ inputs.image_tag }}$|:latest$)" \
+            | xargs -r sudo docker rmi
+          fi
+
+          sudo docker system prune -f
